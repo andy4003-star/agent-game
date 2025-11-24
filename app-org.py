@@ -198,56 +198,7 @@ class DNAClient:
                 "top_p": 0.9,
                 "return_full_text": False,
                 "stop_sequences": ["<|im_end|>"]
-            },
-            "options": {
-                "wait_for_model": True,
-                "use_cache": True
-            }
-        }
-        r = httpx.post(url, json=payload, headers=headers, timeout=HTTPX_TIMEOUT)
-        try:
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if r.status_code == 404:
-                raise DNAHTTPError(
-                    "HF-API 404: 이 모델이 서버리스 Inference API에서 비활성 상태일 수 있습니다. "
-                    "백엔드를 'tgi'(Endpoint 필요) 또는 'openai'(교내 서버)로 전환하거나, 'local'(GPU) 모드를 사용하세요."
-                ) from e
-            raise DNAHTTPError(f"HF-API {r.status_code}: {r.text}") from e
-
-        data = r.json()
-        if isinstance(data, list) and data and "generated_text" in data[0]:
-            return data[0]["generated_text"]
-        if isinstance(data, dict) and "error" in data:
-            raise DNAHTTPError(f"HF-API error: {data['error']}")
-        return str(data)
-
-    def chat_json(self, messages: List[Dict[str,str]], max_new_tokens: int = 600) -> Dict[str, Any]:
-        text = self._generate_text(messages, max_new_tokens=max_new_tokens)
-        return coerce_json(text)
-
-# ==================== Scenario Model ====================
-@dataclass
-class Scenario:
-    sid: str
-    title: str
-    setup: str
-    options: Dict[str, str]  # {"A": "...", "B": "..."}
-    votes: Dict[str, str]    # framework -> "A" | "B"
-    base: Dict[str, Dict[str, float]]
-    accept: Dict[str, float]
-
-FRAMEWORKS = ["emotion", "social", "moral", "identity"]
-
-SCENARIOS: List[Scenario] = [
-    Scenario(
-        sid="S1",
-        title="1단계: 고전적 트롤리",
-        setup="트롤리가 제동 불능 상태로 직진 중. 그대로 두면 선로 위 5명이 위험하다. 스위치를 전환하면 다른 선로의 1명이 위험해진다. "
-              "이 선택은 철학적 사고실험이며 실제 위해를 권장하지 않는다.",
-        options={
-            "A": "레버를 당겨 1명을 위험에 처하게 하되 5명의 위험을 줄인다.",
-            "B": "레버를 당기지 않고 현 상태를 유지한다."
+          다."
         },
         votes={"emotion":"A","social":"B","moral":"B","identity":"A"},
         base={
