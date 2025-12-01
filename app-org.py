@@ -271,7 +271,7 @@ class DNAClient:
         },
         accept={"A":0.55, "B":0.55}
     ),
-]
+
 
 # ==================== Ethics Engine ====================
 def normalize_weights(w: Dict[str, float]) -> Dict[str, float]:
