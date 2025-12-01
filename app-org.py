@@ -205,7 +205,7 @@ class DNAClient:
             "B": {"lives_saved":0, "lives_harmed":5, "fairness_gap":0.50, "rule_violation":0.20, "regret_risk":0.60},
         },
         accept={"A":0.70, "B":0.50}
-    ),
+    },
     Scenario(
         sid="S2",
         title="2단계: 맥락적 요소",
