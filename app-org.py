@@ -198,7 +198,6 @@ class DNAClient:
                 "top_p": 0.9,
                 "return_full_text": False,
                 "stop_sequences": ["<|im_end|>"]
-          다."
         },
         votes={"emotion":"A","social":"B","moral":"B","identity":"A"},
         base={
