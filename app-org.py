@@ -11,7 +11,7 @@ import httpx
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 # ==================== App Config ====================
-st.set_page_config(page_title="북미권AI딜레마 (Ethical Crossroads)", page_icon="🧭", layout="centered")
+st.set_page_config(page_title="윤리적 전환 (Ethical Crossroads)", page_icon="🧭", layout="centered")
 
 # ==================== Global Timeout ====================
 HTTPX_TIMEOUT = httpx.Timeout(
@@ -198,6 +198,60 @@ class DNAClient:
                 "top_p": 0.9,
                 "return_full_text": False,
                 "stop_sequences": ["<|im_end|>"]
+            },
+            "options": {
+                "wait_for_model": True,
+                "use_cache": True
+            }
+        }
+        r = httpx.post(url, json=payload, headers=headers, timeout=HTTPX_TIMEOUT)
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if r.status_code == 404:
+                raise DNAHTTPError(
+                    "HF-API 404: 이 모델이 서버리스 Inference API에서 비활성 상태일 수 있습니다. "
+                    "백엔드를 'tgi'(Endpoint 필요) 또는 'openai'(교내 서버)로 전환하거나, 'local'(GPU) 모드를 사용하세요."
+                ) from e
+            raise DNAHTTPError(f"HF-API {r.status_code}: {r.text}") from e
+
+        data = r.json()
+        if isinstance(data, list) and data and "generated_text" in data[0]:
+            return data[0]["generated_text"]
+        if isinstance(data, dict) and "error" in data:
+            raise DNAHTTPError(f"HF-API error: {data['error']}")
+        return str(data)
+
+    def chat_json(self, messages: List[Dict[str,str]], max_new_tokens: int = 600) -> Dict[str, Any]:
+        text = self._generate_text(messages, max_new_tokens=max_new_tokens)
+        return coerce_json(text)
+
+# ==================== Scenario Model ====================
+@dataclass
+class Scenario:
+    sid: str
+    title: str
+    setup: str
+    options: Dict[str, str]  # {"A": "...", "B": "..."}
+    votes: Dict[str, str]    # framework -> "A" | "B"
+    base: Dict[str, Dict[str, float]]
+    accept: Dict[str, float]
+
+FRAMEWORKS = ["emotion", "social", "moral", "identity"]
+
+SCENARIOS: List[Scenario] = [
+    Scenario(
+        sid="S1",
+        title="의료 AI 딜레마",
+        setup=(
+            "한 병원이 새로운 의료 AI 진단 시스템 MedAI 도입을 검토하고 있다.\n\n"
+            "시뮬레이션 결과 MedAI 도입 시 기존 대기 시간 때문에 치료받지 못해 사망하던 "
+            "환자 1,000명을 살릴 수 있지만, AI의 한계로 약 50명은 잘못된 진단을 받을 수 있다.\n\n"
+            "AI 의료 진단 시스템을 도입할 것인가?"
+        ),
+        options={
+            "A": "MedAI를 도입한다.",
+            "B": "MedAI 도입을 보류한다."
         },
         votes={"emotion":"A","social":"B","moral":"B","identity":"A"},
         base={
@@ -205,16 +259,21 @@ class DNAClient:
             "B": {"lives_saved":0, "lives_harmed":5, "fairness_gap":0.50, "rule_violation":0.20, "regret_risk":0.60},
         },
         accept={"A":0.70, "B":0.50}
-    },
+    ),
     Scenario(
         sid="S2",
-        title="2단계: 맥락적 요소",
-        setup="5명은 무단으로 선로에 진입했고, 다른 선로의 1명은 철도 관리자의 성인 자녀다. "
-              "스위치를 전환하면 1명이 위험해지고, 전환하지 않으면 무단 진입자 5명이 위험해진다. "
-              "시나리오는 가치 판단 토론을 위한 비그래픽 상황이다.",
+        title="딥페이크 AI 딜레마",
+        setup=(
+            "대선을 일주일 앞두고 정부는 허위 정보 확산을 막기 위해 "
+            "AI 기반 딥페이크 실시간 차단 시스템을 긴급 가동했다.\n\n"
+            "AI 분석 결과, 두 개의 고위험 딥페이크가 동시에 전국적 확산 조짐을 보이고 있다.\n\n"
+            "딥페이크 A : 특정 후보가 지지자들에게 폭력을 지시하는 것처럼 합성된 영상.\n"
+            "딥페이크 B : 특정 후보가 실존하지 않는 정책을 발표하는 영상.\n\n"
+            "시스템 구조상 오직 하나만 즉시 차단할 수 있다. 어떤 원칙을 우선 적용할 것인가?"
+        ),
         options={
-            "A": "전환하여 5명의 위험을 줄이되 1명이 직접적 위험에 처한다.",
-            "B": "전환하지 않고 규정을 준수하며 무단 진입의 책임을 묵시적으로 인정한다."
+            "A": "딥페이크 A 차단 (폭력 선동 영상)",
+            "B": "딥페이크 B 차단 (허위 정책 발표 영상)"
         },
         votes={"emotion":"A","social":"B","moral":"B","identity":"B"},
         base={
@@ -225,12 +284,18 @@ class DNAClient:
     ),
     Scenario(
         sid="S3",
-        title="3단계: 의료 재난 분류",
-        setup="의료 재난 현장에서 AI는 부상자 10명을 분류해야 한다. 그중 한 명은 숙련된 의사로서 향후 다수의 생명을 구할 가능성이 높다. "
-              "AI는 잠재적 사회적 가치를 고려할지, 모든 생명을 동등하게 볼지 선택해야 한다.",
+        title="재난 대응 AI 딜레마",
+        setup=(
+            "캘리포니아에서 초대형 산불이 발생했다. 재난 대응 본부는 AI 기반 긴급 구조 배분 시스템을 활용하여 "
+            "소방 인력과 드론을 어느 지역에 먼저 투입할지 결정해야 한다.\n\n"
+            "AI 실시간 분석 결과:\n"
+            "- 어린이 병원으로 산불 확산\n"
+            "- 대규모 수감자가 있는 교도소로 확산\n\n"
+            "어느 곳에 먼저 구조 인력을 파견해야 하는가?"
+        ),
         options={
-            "A": "의사를 우선 수술하도록 배정한다(잠재적 이익 고려).",
-            "B": "모든 부상자를 동등하게 취급해 표준 분류 절차대로 배정한다."
+            "A": "어린이 병원에 먼저 파견한다.",
+            "B": "교도소에 먼저 파견한다."
         },
         votes={"emotion":"A","social":"B","moral":"B","identity":"A"},
         base={
@@ -271,7 +336,7 @@ class DNAClient:
         },
         accept={"A":0.55, "B":0.55}
     ),
-
+]
 
 # ==================== Ethics Engine ====================
 def normalize_weights(w: Dict[str, float]) -> Dict[str, float]:
@@ -306,7 +371,13 @@ def autonomous_decision(scn: Scenario, prev_trust: float) -> str:
     return "A" if scoreA >= scoreB else "B"
 
 def compute_metrics(scn: Scenario, choice: str, weights: Dict[str, float], align: Dict[str, float], prev_trust: float) -> Dict[str, Any]:
-    m = dict(scn.base[choice])
+    if choice in scn.base:
+        m = dict(scn.base[choice])
+    else:
+        # fallback (예: A 선택했는데 S1 base에 A-C/A-D가 아직 없음)
+        base_key = choice.split("-")[0]   # "A-C" → "A"
+        m = dict(scn.base[base_key])
+
     accept_base = scn.accept[choice]
     if scn.sid == "S4" and choice == "A":
         accept_base -= 0.15
@@ -422,6 +493,10 @@ def init_state():
     if "score_hist" not in st.session_state: st.session_state.score_hist = []
     if "prev_trust" not in st.session_state: st.session_state.prev_trust = 0.5
     if "last_out" not in st.session_state: st.session_state.last_out = None
+        
+    if "substep" not in st.session_state: st.session_state.substep = 0
+    if "step1_choice" not in st.session_state: st.session_state.step1_choice = None
+    if "step2_choice" not in st.session_state: st.session_state.step2_choice = None
 
 init_state()
 
@@ -541,8 +616,53 @@ if use_llm:
         client = None
 
 # ==================== Header ====================
-st.title("🧭 북미AI 윤리적 딜레마 (Ethical Crossroads)")
-st.caption("본 앱은 철학적 사고실험입니다. 실존 인물·집단 언급/비방, 그래픽 묘사, 실제 위해 권장 없음.")
+st.markdown(
+    """
+    <div style="padding: 10px 0 0 0;">
+        <h1 style="margin:0; color:#000000; font-weight:800; font-size:40px;">
+            인공지능 경영 1조
+        </h1>
+        <p style="margin:6px 0 0 0; font-size:17px; color:#7f1d1d;">
+            북미 문화권 시나리오
+        </p>
+    </div>
+
+    <hr style="border:0; border-top:1px solid #e5e5e5; margin:15px 0 25px 0;">
+    """,
+    unsafe_allow_html=True
+)
+
+
+st.caption("본 앱은 철학적 사고실험입니다. 실존 인물·집단 언급/비방, 실제 위해 권장 없음.")
+
+def proceed_to_next(final_choice):
+    scn = SCENARIOS[st.session_state.round_idx]
+
+    # 점수/내러티브 계산
+    align = {"A":0, "B":0}  # step2 있으면 A/B align은 step1 기반
+    decision = final_choice
+    computed = compute_metrics(scn, decision, weights, align, st.session_state.prev_trust)
+    m = computed["metrics"]
+    
+    # 로그 저장
+    row = {
+        "timestamp": dt.datetime.utcnow().isoformat(timespec="seconds"),
+        "round": st.session_state.round_idx + 1,
+        "scenario_id": scn.sid,
+        "title": scn.title,
+        "mode": "multi-step",
+        "choice": final_choice,
+        **{k: v for k, v in m.items()},
+    }
+    st.session_state.log.append(row)
+
+    # 다음 라운드 이동
+    st.session_state.round_idx += 1
+    st.session_state.substep = 0
+    st.session_state.step1_choice = None
+    st.session_state.step2_choice = None
+    st.session_state.last_out = None
+    st.rerun()
 
 # ==================== Game Loop ====================
 @dataclass
@@ -555,28 +675,166 @@ class LogRow:
     choice: str
 
 idx = st.session_state.round_idx
+
 if idx >= len(SCENARIOS):
     st.success("모든 단계를 완료했습니다. 사이드바에서 로그를 다운로드하거나 초기화하세요.")
 else:
     scn = SCENARIOS[idx]
+
+    # ---------------- 라운드 타이틀 ----------------
     st.markdown(f"### 라운드 {idx+1} — {scn.title}")
-    st.write(scn.setup)
 
-    st.radio("선택지", options=("A","B"), index=0, key="preview_choice", horizontal=True)
-    st.markdown(f"- **A**: {scn.options['A']}\n- **B**: {scn.options['B']}")
+    # ---------------- 시나리오 영역 (마지막 문장 강조) ----------------
+    scenario_html = scn.setup.replace("\n", "<br>")
+    last_sentence = scenario_html.strip().split("<br>")[-1]
+    scenario_html = scenario_html.replace(
+        last_sentence,
+        f"<strong><span style='font-size:18px;'>{last_sentence}</span></strong>"
+    )
 
+    st.markdown(
+        f"""
+        <div style="
+            background:#f7f7f7;
+            border:1px solid #d4d4d4;
+            border-radius:8px;
+            padding:18px 20px;
+            margin:12px 0 20px 0;
+            line-height:1.6;
+            color:#222;
+        ">
+            {scenario_html}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # ---------------- 선택지 제목 ----------------
+    st.write("### 선택지")
+
+    # ---------------- 1단계 라디오 버튼 (A/B) ----------------
+    choice = st.radio(
+        "",
+        options=["A", "B"],
+        key="preview_choice",
+        horizontal=True
+    )
+    selected = st.session_state.preview_choice
+
+    # 🔥 핵심 로직: A/B 다시 선택하면 Step2 절대 안뜨도록 강제 리셋
+    if st.session_state.substep == 1 and selected != st.session_state.step1_choice:
+        st.session_state.substep = 0
+        st.session_state.step2_choice = None
+
+    # ---------------- 선택지 카드 UI ----------------
+    cA, cB = st.columns(2)
+
+    with cA:
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                <div style="
+                    background:white;
+                    padding:14px;
+                    border-radius:10px;
+                ">
+                    <h4 style="margin:0;">🅐 선택지 A</h4>
+                    <p style="margin-top:8px;">{scn.options['A']}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    with cB:
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                <div style="
+                    background:white;
+                    padding:14px;
+                    border-radius:10px;
+                ">
+                    <h4 style="margin:0;">🅑 선택지 B</h4>
+                    <p style="margin-top:8px;">{scn.options['B']}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+    
+    # 선택지 카드와 "현재 선택" 사이 간격
+    st.markdown("<div style='height:50px;'></div>", unsafe_allow_html=True)
+
+    st.write(f"현재 선택: **{selected if selected else '선택 안됨'}**")
+
+    # ===================== Step1 → Step2 분기 =====================
+    if idx == 0:  # 시나리오 1만 Step2 존재
+        # ------- STEP1 단계 -------
+        if st.session_state.substep == 0:
+            if st.button("다음 ▶ (1단계 결정)"):
+                st.session_state.step1_choice = selected
+
+                if selected == "A":
+                    # Step2 시작
+                    st.session_state.substep = 1
+                else:
+                    # B 선택 → Step2 없이 다음 시나리오로 이동
+                    proceed_to_next("B")
+
+                st.rerun()
+
+        # ------- STEP2 단계 -------
+        elif st.session_state.substep == 1:
+            step2_text = (
+                "당신은 MedAI를 도입했다.<br><br>"
+                "따라서 치료받지 못해 사망하던 환자 1,000명을 살릴 수 있게 됐다.<br><br>"
+                "<strong><span style='font-size:18px;'>과연 어떤 환자 1,000명을 살릴 것인가?</span></strong>"
+            )
+            st.markdown(
+                f"""
+                <div style="
+                background:#f7f7f7;
+                border:1px solid #d4d4d4;
+                border-radius:8px;
+                padding:18px 20px;
+                margin:12px 0 20px 0;
+                line-height:1.6;
+                color:#222;
+                ">
+                {step2_text}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+            st.markdown("### 추가 선택 (Step2)")
+            sub_choice = st.radio("추가 선택", ["C", "D"], key="subchoice_radio")
+            st.session_state.step2_choice = sub_choice
+            
+            if st.button("최종 결정 ▶"):
+                final_choice = f"A-{sub_choice}"
+                proceed_to_next(final_choice)
+
+    # ===================== 학습 기준 / 자율 판단 =====================
     c1, c2 = st.columns(2)
+
     with c1:
         if st.button("🧠 학습 기준 적용(가중 투표)"):
             decision, align = majority_vote_decision(scn, weights)
-            st.session_state.last_out = {"mode":"trained", "decision":decision, "align":align}
+            st.session_state.last_out = {"mode": "trained", "decision": decision, "align": align}
+
     with c2:
         if st.button("🎲 자율 판단(데이터 기반)"):
-            decision = autonomous_decision(scn, prev_trust=st.session_state.prev_trust)
-            a_align = sum(weights[f] for f in FRAMEWORKS if scn.votes[f]=="A")
-            b_align = sum(weights[f] for f in FRAMEWORKS if scn.votes[f]=="B")
-            st.session_state.last_out = {"mode":"autonomous", "decision":decision, "align":{"A":a_align,"B":b_align}}
+            decision = autonomous_decision(scn, st.session_state.prev_trust)
+            a_align = sum(weights[f] for f in FRAMEWORKS if scn.votes[f] == "A")
+            b_align = sum(weights[f] for f in FRAMEWORKS if scn.votes[f] == "B")
 
+            st.session_state.last_out = {
+                "mode": "autonomous",
+                "decision": decision,
+                "align": {"A": a_align, "B": b_align}
+            }
+
+    # ===================== 결과 출력 =====================
     if st.session_state.last_out:
         mode = st.session_state.last_out["mode"]
         decision = st.session_state.last_out["decision"]
@@ -585,66 +843,28 @@ else:
         computed = compute_metrics(scn, decision, weights, align, st.session_state.prev_trust)
         m = computed["metrics"]
 
-        # LLM 내러티브
+        # 내러티브
         try:
             if client:
                 nar = dna_narrative(client, scn, decision, m, weights)
             else:
                 nar = fallback_narrative(scn, decision, m, weights)
-        except Exception as e:
-            import traceback
-            st.warning(f"LLM 생성 실패(폴백 사용): {e}")
-            st.caption(traceback.format_exc(limit=2))
+        except:
             nar = fallback_narrative(scn, decision, m, weights)
 
         st.markdown("---")
         st.subheader("결과")
-        st.write(nar.get("narrative","결과 서사 생성 실패"))
-        st.info(f"AI 근거: {nar.get('ai_rationale','-')}")
+        st.write(nar.get("narrative", "-"))
+        st.info(f"AI 근거: {nar.get('ai_rationale', '-')}")
 
         mc1, mc2, mc3 = st.columns(3)
         mc1.metric("생존/피해", f"{m['lives_saved']} / {m['lives_harmed']}")
         mc2.metric("윤리 일관성", f"{int(100*m['ethical_consistency'])}%")
         mc3.metric("AI 신뢰지표", f"{m['ai_trust_score']:.1f}")
 
-        prog1, prog2, prog3 = st.columns(3)
-        with prog1:
-            st.caption("시민 감정"); st.progress(int(round(100*m["citizen_sentiment"])))
-        with prog2:
-            st.caption("규제 압력"); st.progress(int(round(100*m["regulation_pressure"])))
-        with prog3:
-            st.caption("공정·규칙 만족"); st.progress(int(round(100*m["stakeholder_satisfaction"])))
-
-        with st.expander("📰 사회적 반응 펼치기"):
-            st.write(f"지지 헤드라인: {nar.get('media_support_headline')}")
-            st.write(f"비판 헤드라인: {nar.get('media_critic_headline')}")
-            st.write(f"시민 반응: {nar.get('citizen_quote')}")
-            st.write(f"피해자·가족 반응: {nar.get('victim_family_quote')}")
-            st.write(f"규제 당국 발언: {nar.get('regulator_quote')}")
-            st.caption(nar.get("one_sentence_op_ed",""))
-        st.caption(f"성찰 질문: {nar.get('followup_question','')}")
-
-        # 로그 적재
-        row = {
-            "timestamp": dt.datetime.utcnow().isoformat(timespec="seconds"),
-            "round": idx+1,
-            "scenario_id": scn.sid,
-            "title": scn.title,
-            "mode": mode,
-            "choice": decision,
-            "w_util": round(weights["emotion"],3),
-            "w_deon": round(weights["social"],3),
-            "w_cont": round(weights["moral"],3),
-            "w_virt": round(weights["identity"],3),
-            **{k: v for k,v in m.items()}
-        }
-        st.session_state.log.append(row)
-        st.session_state.score_hist.append(m["ai_trust_score"])
-        st.session_state.prev_trust = clamp(0.6*st.session_state.prev_trust + 0.4*m["social_trust"], 0, 1)
-
         if st.button("다음 라운드 ▶"):
-            st.session_state.round_idx += 1
             st.session_state.last_out = None
+            st.session_state.round_idx += 1
             st.rerun()
 
 # ==================== Footer / Downloads ====================
